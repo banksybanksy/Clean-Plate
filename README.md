@@ -106,7 +106,3 @@ Unrated facilities are surfaced, not dropped. Filtering to "No rating recorded" 
 A restaurant whose history spans every status, including two closures and an unrated visit, all shown in order:
 
 ![Hong Kong Lounge full history](docs/screenshots/restaurant-detail-hongkong.png)
-
-The layout is responsive:
-
-![Mobile home](docs/screenshots/mobile-home.png)
