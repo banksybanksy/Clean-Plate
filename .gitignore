@@ -1,0 +1,28 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Local data cache ---
+# The SQLite cache is downloaded from DataSF on first run (see README).
+# It is large and regenerable, so it is never committed.
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+data/*.sqlite-*
+
+# --- Secrets / local environment ---
+.env
+.env.*
+!.env.example
+
+# --- Editor / OS / tooling ---
+.DS_Store
+.claude/
+.vscode/
+.idea/
+*.swp

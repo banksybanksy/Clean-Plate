@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SF Restaurant Health Scores</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round">
+        <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/>
+        <path d="M7 2v20"/>
+        <path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
+      </svg>
+    </span>
+    <span class="brand-text">SF Restaurant Health Scores</span>
+  </a>
+  <nav>
+    <a href="#/" data-nav="home">Search</a>
+    <a href="#/browse" data-nav="browse">Browse</a>
+  </nav>
+  <div class="data-status" id="data-status" title="Local cache status"></div>
+</header>
+
+<main id="view"></main>
+
+<footer class="footer">
+  <p>
+    Data: <a id="dataset-link" href="https://data.sfgov.org/d/tvy3-wexg" target="_blank" rel="noopener">
+    DataSF: Health Inspection Scores (2024-Present)</a>, cached locally.
+    Statuses (Pass / Conditional Pass / Closure) are reported by SF Dept. of
+    Public Health as-is.
+  </p>
+  <p class="muted">
+    A restaurant missing from this data isn’t necessarily unsafe. It may be
+    newly opened, renamed, or not yet in the dataset.
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
