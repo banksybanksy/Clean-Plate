@@ -1,5 +1,7 @@
 # Clean Plate
 
+[![CI](https://github.com/banksybanksy/Clean-Plate/actions/workflows/ci.yml/badge.svg)](https://github.com/banksybanksy/Clean-Plate/actions/workflows/ci.yml)
+
 A local web app for looking up a San Francisco restaurant's health inspection record: its current Pass / Conditional Pass / Closure status, the violations cited and every inspection since 2024. I built it because SF no longer publishes a numeric health score, and the data that replaced it is easy to misread.
 
 ![Restaurant detail: the status is dated to the latest rated inspection, while a later unrated site visit stays in the history](docs/screenshots/restaurant-detail-kaiyo.png)
