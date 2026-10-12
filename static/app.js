@@ -28,10 +28,17 @@ function fmtDate(iso) {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 /* DataSF names are upper case. Capitalize after spaces and separators only,
-   so "JOE'S" becomes "Joe's" and "CAFÉ ÉCLAIR" becomes "Café Éclair". */
+   so "JOE'S" becomes "Joe's" and "CAFÉ ÉCLAIR" becomes "Café Éclair", then
+   restore surname prefixes: "McDonald's", "O'Reilly's", "Fior D'Italia". */
+const WORD_START = "(^|[\\s\\-\\/(&.])";
+const FIRST_LETTER = new RegExp(WORD_START + "(\\p{L})", "gu");
+const MC_PREFIX = new RegExp(WORD_START + "Mc(\\p{L})", "gu");
+const ELIDED_PREFIX = new RegExp(WORD_START + "([OD])'(\\p{L})(?=\\p{L})", "gu");
 function titleCase(s) {
   return String(s || "").replace(/\s+/g, " ").trim().toLowerCase()
-    .replace(/(^|[\s\-\/(&.])(\p{L})/gu, (_, sep, c) => sep + c.toUpperCase());
+    .replace(FIRST_LETTER, (_, sep, c) => sep + c.toUpperCase())
+    .replace(MC_PREFIX, (_, sep, c) => sep + "Mc" + c.toUpperCase())
+    .replace(ELIDED_PREFIX, (_, sep, p, c) => sep + p + "'" + c.toUpperCase());
 }
 function plural(n, one, many) {
   return `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
@@ -458,7 +465,7 @@ async function viewBrowse(neighborhood) {
       .forEach(h => {
         const o = document.createElement("option");
         o.value = h.neighborhood;
-        o.textContent = `${h.neighborhood} (${h.restaurants})`;
+        o.textContent = `${h.neighborhood} (${h.restaurants.toLocaleString()})`;
         $hood.appendChild(o);
       });
     $hood.value = browseState.neighborhood;
