@@ -4,13 +4,17 @@
 
 A local web app for looking up a San Francisco restaurant's health inspection record: its current Pass / Conditional Pass / Closure status, the violations cited and every inspection since 2024. I built it because SF no longer publishes a numeric health score, and the data that replaced it is easy to misread.
 
-![Restaurant detail: the status is dated to the latest rated inspection, while a later unrated site visit stays in the history](docs/screenshots/restaurant-detail-kaiyo.png)
+![Home page: search, the three city statuses explained, live dataset counts and per-neighborhood status rollups](docs/screenshots/home.jpg)
+
+<sub>Captured October 12, 2026 from the live DataSF dataset (22,773 inspections).</sub>
 
 ## How it works
 
 **Current status means the latest *rated* inspection.** The current DataSF dataset has no score column, and many visits (site visits, plan checks, some complaint follow-ups) carry no rating at all. If you took "status" from the most recent row, a restaurant rated Pass a month ago would show as unrated. A shared SQL CTE (`RESTAURANTS_CTE` in [app.py](app.py)) rolls inspections up to one row per permit. Name and address come from the newest row, and status comes from the newest row where `facility_rating_status IS NOT NULL`. Unrated visits stay in the history, labeled "not rated".
 
 **Nothing is invented.** The app doesn't compute a grade, doesn't hide unrated visits and doesn't backfill old-dataset scores. Statuses use the city's own wording, and violations are shown as the inspector wrote them.
+
+![A restaurant's record: status dated to its latest rated inspection, with every inspection since 2024 and no violations cited](docs/screenshots/restaurant-detail.jpg)
 
 **Violations are parsed from one text field.** Each inspection stores its violations as a single string: `<codes> - <description>., <codes> - <description>.` `parse_violations` splits entries only where a period follows a letter, so section numbers like `113953.3` stay whole. It also splits code lists only on commas outside parentheses, so `114067(f, g)` stays one code.
 
