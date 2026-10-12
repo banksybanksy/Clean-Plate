@@ -1,4 +1,4 @@
-/* SF Restaurant Health Scores: frontend (no dependencies). */
+/* Clean Plate frontend. No dependencies. */
 "use strict";
 
 const $view = document.getElementById("view");
@@ -23,14 +23,24 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 function fmtDate(iso) {
-  if (!iso) return "-";
   const d = new Date(iso);
+  if (!iso || isNaN(d)) return "-";
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
+/* DataSF names are upper case. Capitalize after spaces and separators only,
+   so "JOE'S" becomes "Joe's" and "CAFÉ ÉCLAIR" becomes "Café Éclair". */
 function titleCase(s) {
-  return String(s || "").replace(/\s+/g, " ").trim()
-    .toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  return String(s || "").replace(/\s+/g, " ").trim().toLowerCase()
+    .replace(/(^|[\s\-\/(&.])(\p{L})/gu, (_, sep, c) => sep + c.toUpperCase());
 }
+function plural(n, one, many) {
+  return `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
+}
+/* Incremented on every navigation so a slow response for a view the user
+   has already left is dropped instead of overwriting the current one. */
+let renderSeq = 0;
+const isStale = (seq) => seq !== renderSeq;
+
 async function api(path, params) {
   const qs = params ? "?" + new URLSearchParams(params) : "";
   const resp = await fetch(path + qs);
@@ -50,9 +60,9 @@ async function loadStatus() {
     if (s.refreshing) {
       clearTimeout(statusPollTimer);
       statusPollTimer = setTimeout(loadStatus, 1500);
-    } else if (s.rows > 0 && $view.dataset.waitingForData === "1") {
+    } else if ($view.dataset.waitingForData === "1" && (s.rows > 0 || s.refresh_error)) {
       delete $view.dataset.waitingForData;
-      route(); // data just arrived, re-render current view
+      route();
     }
   } catch (e) {
     $dataStatus.textContent = "server unreachable";
@@ -62,23 +72,25 @@ async function loadStatus() {
 function renderDataStatus(s) {
   if (s.refreshing) {
     $dataStatus.innerHTML =
-      `⏳ Refreshing from DataSF… <span class="muted">${esc(s.refresh_progress || "")}</span>`;
+      `Refreshing from DataSF… <span class="muted">${esc(s.refresh_progress || "")}</span>`;
     return;
   }
   let text;
   if (!s.rows) {
     text = s.refresh_error
-      ? `⚠️ refresh failed: ${esc(s.refresh_error)}`
+      ? `<span class="warn">Refresh failed</span>`
       : "no data cached yet";
   } else {
     text = `${s.rows.toLocaleString()} records · refreshed ${fmtDate(s.last_refresh)}`;
-    if (s.refresh_error) text = `⚠️ last refresh failed · ` + text;
+    if (s.refresh_error) text = `<span class="warn">Last refresh failed</span> · ` + text;
   }
   $dataStatus.innerHTML =
     `${text}<button id="btn-refresh" title="Re-download the dataset from DataSF">Refresh</button>`;
+  if (s.refresh_error) $dataStatus.title = s.refresh_error;
+  else $dataStatus.removeAttribute("title");
   document.getElementById("btn-refresh").onclick = async (ev) => {
     ev.target.disabled = true;
-    await fetch("/api/refresh", { method: "POST" });
+    try { await fetch("/api/refresh", { method: "POST" }); } catch (e) { /* shown by loadStatus */ }
     loadStatus();
   };
 }
@@ -87,7 +99,10 @@ function renderDataStatus(s) {
 
 function route() {
   const hash = location.hash || "#/";
-  const parts = hash.slice(2).split("/").map(decodeURIComponent);
+  const parts = hash.slice(2).split("/").map(p => {
+    try { return decodeURIComponent(p); } catch (e) { return p; }
+  });
+  renderSeq++;
   document.querySelectorAll("[data-nav]").forEach(a => a.classList.remove("active"));
   window.scrollTo(0, 0);
   if (parts[0] === "r" && parts[1]) {
@@ -105,6 +120,7 @@ window.addEventListener("hashchange", route);
 /* ---------------- home / search ---------------- */
 
 async function viewHome() {
+  const seq = renderSeq;
   $view.innerHTML = `
     <div class="hero">
       <div class="hero-food" aria-hidden="true">🌮🍜🥟🍕🥘</div>
@@ -120,8 +136,10 @@ async function viewHome() {
         </svg>
       </span>
       <input id="q" type="search" autocomplete="off" spellcheck="false"
+             enterkeyhint="search" aria-label="Search restaurants"
+             role="combobox" aria-controls="sugg" aria-expanded="false" aria-autocomplete="list"
              placeholder="Restaurant name, address, or neighborhood…" autofocus>
-      <div class="suggestions" id="sugg" hidden></div>
+      <div class="suggestions" id="sugg" role="listbox" hidden></div>
     </div>
     <div class="legend">
       <span>${pill("Pass")} passed inspection</span>
@@ -134,8 +152,15 @@ async function viewHome() {
 
   try {
     const [s, hoods] = await Promise.all([api("/api/status"), api("/api/neighborhoods")]);
+    if (isStale(seq)) return;
     if (!s.rows) {
       $view.dataset.waitingForData = "1";
+      if (s.refresh_error && !s.refreshing) {
+        document.getElementById("home-stats").innerHTML =
+          `<div class="error-box">Couldn’t download inspection data from DataSF:
+           ${esc(s.refresh_error)}<br>Check your connection and press Refresh.</div>`;
+        return;
+      }
       document.getElementById("home-stats").innerHTML =
         `<div class="loading">Downloading inspection data from DataSF. This page will
          populate automatically when it finishes.</div>`;
@@ -147,14 +172,14 @@ async function viewHome() {
         <div class="stat stat-a">
           <div class="stat-icon" aria-hidden="true">🍽️</div>
           <div class="stat-body">
-            <div class="n" data-count="${s.restaurants}">0</div>
+            <div class="n">${s.restaurants.toLocaleString()}</div>
             <div class="l">kitchens tracked</div>
           </div>
         </div>
         <div class="stat stat-b">
           <div class="stat-icon" aria-hidden="true">📋</div>
           <div class="stat-body">
-            <div class="n" data-count="${s.rows}">0</div>
+            <div class="n">${s.rows.toLocaleString()}</div>
             <div class="l">inspections since 2024</div>
           </div>
         </div>
@@ -172,37 +197,19 @@ async function viewHome() {
           <a class="hood-card" href="#/browse/${encodeURIComponent(h.neighborhood)}">
             <div class="h-name">${esc(h.neighborhood)}</div>
             <div class="h-counts">
-              <span>${h.restaurants} places</span>
-              <span class="c-pass">${h.pass || 0} pass</span>
-              ${h.conditional ? `<span class="c-cond">${h.conditional} cond.</span>` : ""}
-              ${h.closure ? `<span class="c-closed">${h.closure} closed</span>` : ""}
+              <span>${plural(h.restaurants, "place", "places")}</span>
+              <span class="c-pass">${(h.pass || 0).toLocaleString()} pass</span>
+              ${h.conditional ? `<span class="c-cond">${h.conditional.toLocaleString()} cond.</span>` : ""}
+              ${h.closure ? `<span class="c-closed">${h.closure.toLocaleString()} closed</span>` : ""}
             </div>
             ${ratioBar(h)}
           </a>`).join("")}
       </div>`;
-    animateCounts();
   } catch (e) {
+    if (isStale(seq)) return;
     document.getElementById("home-stats").innerHTML =
       `<div class="error-box">Could not load data: ${esc(e.message)}</div>`;
   }
-}
-
-function animateCounts() {
-  const els = document.querySelectorAll(".n[data-count]");
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  els.forEach(el => {
-    const target = parseInt(el.dataset.count, 10) || 0;
-    if (reduceMotion) { el.textContent = target.toLocaleString(); return; }
-    const duration = 900;
-    const start = performance.now();
-    const tick = (now) => {
-      const p = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
-      el.textContent = Math.round(target * eased).toLocaleString();
-      if (p < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
 }
 
 /* Small stacked bar showing each neighborhood's status mix. Counts are in
@@ -241,7 +248,12 @@ function wireSearch() {
   }, 3200);
   $q.placeholder = SEARCH_HINTS[0];
 
-  const close = () => { $sugg.hidden = true; sel = -1; };
+  const close = () => {
+    $sugg.hidden = true;
+    sel = -1;
+    $q.setAttribute("aria-expanded", "false");
+    $q.removeAttribute("aria-activedescendant");
+  };
 
   function renderSugg(results, query) {
     current = results;
@@ -254,7 +266,7 @@ function wireSearch() {
       return;
     }
     $sugg.innerHTML = results.map((r, i) => `
-      <div class="suggestion" data-i="${i}">
+      <div class="suggestion" data-i="${i}" id="sugg-${i}" role="option">
         <div>
           <div class="s-name">${esc(titleCase(r.dba))}</div>
           <div class="s-sub">${esc(titleCase(r.street_address))}${r.analysis_neighborhood ? " · " + esc(r.analysis_neighborhood) : ""}</div>
@@ -262,6 +274,7 @@ function wireSearch() {
         ${pill(r.status)}
       </div>`).join("");
     $sugg.hidden = false;
+    $q.setAttribute("aria-expanded", "true");
     $sugg.querySelectorAll(".suggestion[data-i]").forEach(el => {
       el.onmousedown = (ev) => { // mousedown fires before input blur
         ev.preventDefault();
@@ -272,13 +285,14 @@ function wireSearch() {
 
   $q.addEventListener("input", () => {
     clearTimeout(timer);
+    current = [];
     const q = $q.value.trim();
     if (q.length < 2) { close(); return; }
     timer = setTimeout(async () => {
       try {
         const data = await api("/api/search", { q });
         if ($q.value.trim() === data.query) renderSugg(data.results, data.query);
-      } catch (e) { /* server briefly busy during refresh, ignore */ }
+      } catch (e) { /* keep the previous suggestions; the next keystroke retries */ }
     }, 180);
   });
   $q.addEventListener("keydown", (ev) => {
@@ -288,7 +302,11 @@ function wireSearch() {
       ev.preventDefault();
       sel = ev.key === "ArrowDown"
         ? Math.min(sel + 1, items.length - 1) : Math.max(sel - 1, 0);
-      items.forEach((el, i) => el.classList.toggle("sel", i === sel));
+      items.forEach((el, i) => {
+        el.classList.toggle("sel", i === sel);
+        el.setAttribute("aria-selected", i === sel ? "true" : "false");
+      });
+      $q.setAttribute("aria-activedescendant", items[sel].id);
       items[sel].scrollIntoView({ block: "nearest" });
     } else if (ev.key === "Enter") {
       const pick = sel >= 0 ? current[sel] : current[0];
@@ -304,11 +322,14 @@ function wireSearch() {
 /* ---------------- restaurant detail ---------------- */
 
 async function viewDetail(permit) {
+  const seq = renderSeq;
   $view.innerHTML = `<div class="loading">Loading…</div>`;
   let data;
   try {
     data = await api("/api/restaurant", { permit });
+    if (isStale(seq)) return;
   } catch (e) {
+    if (isStale(seq)) return;
     $view.innerHTML = `<a class="crumb" href="#/">← Search</a>
       <div class="error-box">Couldn’t load this restaurant: ${esc(e.message)}</div>`;
     return;
@@ -353,7 +374,7 @@ function renderInspection(ins) {
   const info = statusInfo(ins.facility_rating_status);
   const nViol = ins.violations.length;
   const countLabel = ins.facility_rating_status
-    ? (nViol ? `${nViol} violation ${nViol === 1 ? "item" : "items"}` : "no violations")
+    ? (nViol ? plural(nViol, "violation item", "violation items") : "no violations")
     : "not rated";
   const body = `
     ${nViol ? `<ul class="viols">${ins.violations.map(v => `
@@ -361,16 +382,18 @@ function renderInspection(ins) {
           <div class="v-desc">${esc(v.description)}</div>
           ${v.codes.length ? `<div class="v-codes">${v.codes.map(c => `<span>${esc(c)}</span>`).join("")}</div>` : ""}
         </li>`).join("")}</ul>`
-      : (ins.facility_rating_status
-          ? `<div class="no-viols">✨ Clean plate! No violations recorded at this inspection.</div>`
-          : `<div class="notes">No rating or violations recorded for this visit type.</div>`)}
+      : (ins.facility_rating_status === "Pass"
+          ? `<div class="no-viols">Clean plate: no violations recorded at this inspection.</div>`
+          : ins.facility_rating_status
+            ? `<div class="notes">No violation details were published for this inspection.</div>`
+            : `<div class="notes">No rating or violations recorded for this visit type.</div>`)}
     ${ins.inspection_notes ? `<div class="notes">${esc(ins.inspection_notes)}</div>` : ""}
     ${ins.suspension_notes ? `<div class="notes">${esc(ins.suspension_notes)}</div>` : ""}`;
   return `
     <li class="${info.cls}">
       <details>
         <summary>
-          <span class="chev">▶</span>
+          <span class="chev" aria-hidden="true">▶</span>
           <span class="t-date">${fmtDate(ins.inspection_date)}</span>
           <span class="t-type">${esc(ins.inspection_type || "Visit")}</span>
           ${ins.facility_rating_status ? pill(ins.facility_rating_status) : ""}
@@ -385,14 +408,23 @@ function renderInspection(ins) {
 
 const browseState = { neighborhood: "", status: "", sort: "name", dir: "asc", offset: 0, rows: [] };
 
+const BROWSE_COLUMNS = [
+  ["name", "Restaurant", ""],
+  ["neighborhood", "Neighborhood", "col-hood"],
+  ["status", "Status", ""],
+  ["date", "Last inspected", "col-date"],
+  ["violations", "Violations*", "num col-viol"],
+];
+
 async function viewBrowse(neighborhood) {
+  const seq = renderSeq;
   browseState.neighborhood = neighborhood || "";
   browseState.offset = 0;
   browseState.rows = [];
   $view.innerHTML = `
     <div class="filters">
-      <select id="f-hood"><option value="">All neighborhoods</option></select>
-      <select id="f-status">
+      <select id="f-hood" aria-label="Neighborhood"><option value="">All neighborhoods</option></select>
+      <select id="f-status" aria-label="Status">
         <option value="">Any status</option>
         <option value="Pass">Pass</option>
         <option value="Conditional Pass">Conditional Pass</option>
@@ -404,21 +436,21 @@ async function viewBrowse(neighborhood) {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th data-sort="name">Restaurant <span class="arrow"></span></th>
-          <th data-sort="neighborhood">Neighborhood <span class="arrow"></span></th>
-          <th data-sort="status">Status <span class="arrow"></span></th>
-          <th data-sort="date">Last inspected <span class="arrow"></span></th>
-          <th data-sort="violations" class="num">Violations* <span class="arrow"></span></th>
+          ${BROWSE_COLUMNS.map(([key, label, cls]) => `
+            <th data-sort="${key}" class="${cls}"><button type="button">${label}
+              <span class="arrow" aria-hidden="true"></span></button></th>`).join("")}
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
     <button class="load-more" id="more" hidden>Load more</button>
-    <p class="muted" style="font-size:12.5px">* violation items at the most recent rated inspection.</p>
+    <p class="footnote">* Violation items at the most recent rated inspection.</p>
   `;
 
+  document.getElementById("f-status").value = browseState.status;
   try {
     const hoods = await api("/api/neighborhoods");
+    if (isStale(seq)) return;
     const $hood = document.getElementById("f-hood");
     hoods.neighborhoods
       .slice()
@@ -443,7 +475,7 @@ async function viewBrowse(neighborhood) {
     loadBrowseRows();
   };
   document.querySelectorAll("th[data-sort]").forEach(th => {
-    th.onclick = () => {
+    th.querySelector("button").onclick = () => {
       const key = th.dataset.sort;
       if (browseState.sort === key) {
         browseState.dir = browseState.dir === "asc" ? "desc" : "asc";
@@ -462,14 +494,19 @@ async function viewBrowse(neighborhood) {
   loadBrowseRows();
 }
 
+let browseSeq = 0;
+
 async function loadBrowseRows(append) {
+  const seq = renderSeq, req = ++browseSeq;
   const $rows = document.getElementById("rows");
   const $count = document.getElementById("f-count");
   const $more = document.getElementById("more");
   if (!append) $rows.innerHTML = `<tr><td colspan="5" class="loading">Loading…</td></tr>`;
   document.querySelectorAll("th[data-sort]").forEach(th => {
-    th.querySelector(".arrow").textContent =
-      th.dataset.sort === browseState.sort ? (browseState.dir === "asc" ? "▲" : "▼") : "";
+    const active = th.dataset.sort === browseState.sort;
+    th.querySelector(".arrow").textContent = active ? (browseState.dir === "asc" ? "▲" : "▼") : "";
+    if (active) th.setAttribute("aria-sort", browseState.dir === "asc" ? "ascending" : "descending");
+    else th.removeAttribute("aria-sort");
   });
   try {
     const data = await api("/api/browse", {
@@ -480,27 +517,35 @@ async function loadBrowseRows(append) {
       limit: 200,
       offset: browseState.offset,
     });
+    if (isStale(seq) || req !== browseSeq) return;
     browseState.rows = append ? browseState.rows.concat(data.results) : data.results;
     if (!browseState.rows.length) {
       $rows.innerHTML = `<tr><td colspan="5" class="loading">No restaurants match
         these filters${data.total === 0 && !browseState.status ? " (the cache may still be downloading)" : ""}.</td></tr>`;
     } else {
       $rows.innerHTML = browseState.rows.map(r => `
-        <tr onclick="location.hash='#/r/${encodeURIComponent(r.permit_number)}'">
-          <td><div class="rowname">${esc(titleCase(r.dba))}</div>
-              <div class="rowsub">${esc(titleCase(r.street_address))}</div></td>
-          <td>${esc(r.analysis_neighborhood || "-")}</td>
-          <td>${pill(r.status)}</td>
-          <td>${fmtDate(r.latest_date)}</td>
-          <td class="num">${r.status == null ? "-" : (r.status_violations ?? 0)}</td>
+        <tr data-href="#/r/${encodeURIComponent(r.permit_number)}">
+          <td><a class="rowname" href="#/r/${encodeURIComponent(r.permit_number)}">${esc(titleCase(r.dba))}</a>
+              <div class="rowsub">${esc(titleCase(r.street_address))}<span class="rowsub-hood">${r.analysis_neighborhood ? " · " + esc(r.analysis_neighborhood) : ""}</span></div></td>
+          <td class="col-hood">${esc(r.analysis_neighborhood || "-")}</td>
+          <td>${pill(r.status)}<div class="rowsub cell-date">${fmtDate(r.latest_date)}</div></td>
+          <td class="col-date">${fmtDate(r.latest_date)}</td>
+          <td class="num col-viol">${r.status == null ? "-" : (r.status_violations ?? 0)}</td>
         </tr>`).join("");
     }
-    $count.textContent = `${data.total.toLocaleString()} restaurants`;
+    $count.textContent = plural(data.total, "restaurant", "restaurants");
     $more.hidden = browseState.rows.length >= data.total;
   } catch (e) {
+    if (isStale(seq) || req !== browseSeq) return;
     $rows.innerHTML = `<tr><td colspan="5" class="error-box">Error: ${esc(e.message)}</td></tr>`;
   }
 }
+
+/* Whole-row click target for mouse users; the name link covers keyboard. */
+$view.addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr[data-href]");
+  if (tr && !ev.target.closest("a") && !getSelection().toString()) location.hash = tr.dataset.href;
+});
 
 /* ---------------- boot ---------------- */
 loadStatus();

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-SF Restaurant Health Score Lookup: local server.
+Clean Plate: local server for San Francisco restaurant inspection results.
 
-Zero-dependency (Python standard library only). Serves the frontend from
-./static, caches DataSF health-inspection data in ./data/inspections.db,
-and exposes a small JSON API.
+Standard library only. Serves the frontend from ./static, caches DataSF
+health-inspection data in ./data/inspections.db, and exposes a small JSON API.
 
 Data source: DataSF "Health Inspection Scores (2024-Present)"
 https://data.sfgov.org/d/tvy3-wexg  (SODA resource: tvy3-wexg)
@@ -36,11 +35,22 @@ DATASET_PAGE = f"https://data.sfgov.org/d/{DATASET_ID}"
 SODA_URL = f"https://data.sfgov.org/resource/{DATASET_ID}.json"
 PAGE_SIZE = 5000
 FETCH_FIELDS = [
-    "inspection_date", "permit_number", "dba", "permit_type",
-    "street_address", "inspection_type", "facility_rating_status",
-    "violation_count", "violation_codes", "inspection_notes",
-    "suspension_notes", "analysis_neighborhood", "supervisor_district",
-    "latitude", "longitude", "data_as_of",
+    "inspection_date",
+    "permit_number",
+    "dba",
+    "permit_type",
+    "street_address",
+    "inspection_type",
+    "facility_rating_status",
+    "violation_count",
+    "violation_codes",
+    "inspection_notes",
+    "suspension_notes",
+    "analysis_neighborhood",
+    "supervisor_district",
+    "latitude",
+    "longitude",
+    "data_as_of",
 ]
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -157,7 +167,7 @@ def soda_get(params):
     qs = urllib.parse.urlencode(params)
     req = urllib.request.Request(
         f"{SODA_URL}?{qs}",
-        headers={"User-Agent": "sf-healthscore-local/1.0"},
+        headers={"User-Agent": "clean-plate-local/1.0"},
     )
     if APP_TOKEN:
         req.add_header("X-App-Token", APP_TOKEN)
@@ -172,6 +182,49 @@ def soda_get(params):
     raise RuntimeError(f"DataSF request failed after 3 attempts: {last_err}")
 
 
+INSERT_SQL = """
+INSERT INTO inspections
+    (permit_number, dba, permit_type, street_address,
+     analysis_neighborhood, supervisor_district,
+     inspection_date, inspection_type,
+     facility_rating_status, violation_count,
+     violation_codes, inspection_notes, suspension_notes,
+     latitude, longitude, data_as_of)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+"""
+
+
+def _num(value, cast):
+    return cast(float(value)) if value not in (None, "") else None
+
+
+def record_to_row(r):
+    """Map one SODA JSON record to an INSERT_SQL parameter tuple."""
+    return (
+        r.get("permit_number"),
+        r.get("dba"),
+        r.get("permit_type"),
+        r.get("street_address"),
+        r.get("analysis_neighborhood"),
+        r.get("supervisor_district"),
+        r.get("inspection_date"),
+        r.get("inspection_type"),
+        r.get("facility_rating_status"),
+        _num(r.get("violation_count"), int),
+        r.get("violation_codes"),
+        r.get("inspection_notes"),
+        r.get("suspension_notes"),
+        _num(r.get("latitude"), float),
+        _num(r.get("longitude"), float),
+        r.get("data_as_of"),
+    )
+
+
+def replace_inspections(conn, records):
+    conn.execute("DELETE FROM inspections")
+    conn.executemany(INSERT_SQL, [record_to_row(r) for r in records])
+
+
 def do_refresh():
     """Fetch the full dataset and replace the local cache atomically."""
     refresh_state.update(running=True, progress="starting", error=None)
@@ -179,49 +232,28 @@ def do_refresh():
         rows, offset = [], 0
         while True:
             refresh_state["progress"] = f"fetched {len(rows):,} rows..."
-            page = soda_get({
-                "$select": ",".join(FETCH_FIELDS),
-                "$order": ":id",
-                "$limit": PAGE_SIZE,
-                "$offset": offset,
-            })
+            page = soda_get(
+                {
+                    "$select": ",".join(FETCH_FIELDS),
+                    "$order": ":id",
+                    "$limit": PAGE_SIZE,
+                    "$offset": offset,
+                }
+            )
             rows.extend(page)
             if len(page) < PAGE_SIZE:
                 break
             offset += PAGE_SIZE
 
+        if not rows:
+            raise RuntimeError("DataSF returned no rows; kept the existing cache")
+
         refresh_state["progress"] = f"writing {len(rows):,} rows to cache..."
         conn = connect()
         try:
             with conn:  # single transaction: readers see old data until commit
-                conn.execute("DELETE FROM inspections")
-                conn.executemany(
-                    """INSERT INTO inspections
-                       (permit_number, dba, permit_type, street_address,
-                        analysis_neighborhood, supervisor_district,
-                        inspection_date, inspection_type,
-                        facility_rating_status, violation_count,
-                        violation_codes, inspection_notes, suspension_notes,
-                        latitude, longitude, data_as_of)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    [(
-                        r.get("permit_number"), r.get("dba"),
-                        r.get("permit_type"), r.get("street_address"),
-                        r.get("analysis_neighborhood"),
-                        r.get("supervisor_district"),
-                        r.get("inspection_date"), r.get("inspection_type"),
-                        r.get("facility_rating_status"),
-                        int(float(r["violation_count"]))
-                        if r.get("violation_count") else None,
-                        r.get("violation_codes"), r.get("inspection_notes"),
-                        r.get("suspension_notes"),
-                        float(r["latitude"]) if r.get("latitude") else None,
-                        float(r["longitude"]) if r.get("longitude") else None,
-                        r.get("data_as_of"),
-                    ) for r in rows],
-                )
-                set_meta(conn, "last_refresh",
-                         datetime.now(timezone.utc).isoformat())
+                replace_inspections(conn, rows)
+                set_meta(conn, "last_refresh", datetime.now(timezone.utc).isoformat())
                 set_meta(conn, "row_count", str(len(rows)))
         finally:
             conn.close()
@@ -237,9 +269,9 @@ def do_refresh():
 def start_refresh():
     if refresh_lock.acquire(blocking=False):
         try:
-            t = threading.Thread(target=lambda: (do_refresh(),
-                                                 refresh_lock.release()),
-                                 daemon=True)
+            t = threading.Thread(
+                target=lambda: (do_refresh(), refresh_lock.release()), daemon=True
+            )
             refresh_state["running"] = True
             t.start()
             return True
@@ -261,6 +293,24 @@ def start_refresh():
 
 VIOL_SPLIT = re.compile(r"(?<=[A-Za-z)\]])\.\s*,\s+")
 CODE_LIKE = re.compile(r"\b\d{5,6}\b")
+CLOSURE_LIKE = re.compile(r"PERMIT SUSPENSION|CLOSURE", re.IGNORECASE)
+
+
+def split_codes(head):
+    """Split "114067(f, g), 114099" on commas outside parentheses."""
+    codes, depth, current = [], 0, ""
+    for ch in head:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(depth - 1, 0)
+        if ch == "," and depth == 0:
+            codes.append(current)
+            current = ""
+        else:
+            current += ch
+    codes.append(current)
+    return [c.strip() for c in codes if c.strip()]
 
 
 def parse_violations(text):
@@ -278,18 +328,19 @@ def parse_violations(text):
             head, sep, tail = part.partition(" - ")
             if sep and CODE_LIKE.search(head) and len(head) <= 250:
                 codes, desc = head.strip(), tail.strip()
-        is_closure = bool(re.search(
-            r"PERMIT SUSPENSION|CLOSURE", desc[:120], re.IGNORECASE))
-        items.append({
-            "codes": [c.strip() for c in codes.split(",") if c.strip()],
-            "description": desc,
-            "closure_notice": is_closure,
-        })
+        items.append(
+            {
+                "codes": split_codes(codes),
+                "description": desc,
+                "closure_notice": bool(CLOSURE_LIKE.search(desc[:120])),
+            }
+        )
     return items
 
 
 # ---------------------------------------------------------------------------
 # API handlers
+
 
 def esc_like(term):
     return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
@@ -303,7 +354,8 @@ def api_status(conn, _params):
     # a handful of source rows are future-dated typos; skip them for the stat
     newest = conn.execute(
         "SELECT MAX(inspection_date) d FROM inspections "
-        "WHERE inspection_date <= datetime('now', '+1 day')").fetchone()["d"]
+        "WHERE inspection_date <= datetime('now', '+1 day')"
+    ).fetchone()["d"]
     return {
         "dataset_id": DATASET_ID,
         "dataset_name": DATASET_NAME,
@@ -327,10 +379,13 @@ def api_search(conn, params):
     for t in tokens:
         where.append(
             "(dba LIKE ? ESCAPE '\\' OR street_address LIKE ? ESCAPE '\\' "
-            "OR analysis_neighborhood LIKE ? ESCAPE '\\')")
+            "OR analysis_neighborhood LIKE ? ESCAPE '\\')"
+        )
         args.extend([f"%{esc_like(t)}%"] * 3)
-    sql = (RESTAURANTS_CTE +
-           f"SELECT * FROM restaurants WHERE {' AND '.join(where)} LIMIT 400")
+    sql = (
+        RESTAURANTS_CTE
+        + f"SELECT * FROM restaurants WHERE {' AND '.join(where)} LIMIT 400"
+    )
     rows = [dict(r) for r in conn.execute(sql, args)]
 
     ql = q.lower()
@@ -355,12 +410,14 @@ def api_restaurant(conn, params):
         return {"error": "missing permit"}, 400
     rows = conn.execute(
         "SELECT * FROM inspections WHERE permit_number=? "
-        "ORDER BY inspection_date DESC, id DESC", (permit,)).fetchall()
+        "ORDER BY inspection_date DESC, id DESC",
+        (permit,),
+    ).fetchall()
     if not rows:
         return {"error": "not found"}, 404
     summary = conn.execute(
-        RESTAURANTS_CTE + "SELECT * FROM restaurants WHERE permit_number=?",
-        (permit,)).fetchone()
+        RESTAURANTS_CTE + "SELECT * FROM restaurants WHERE permit_number=?", (permit,)
+    ).fetchone()
     inspections = []
     for r in rows:
         d = dict(r)
@@ -370,7 +427,9 @@ def api_restaurant(conn, params):
 
 
 def api_neighborhoods(conn, _params):
-    sql = RESTAURANTS_CTE + """
+    sql = (
+        RESTAURANTS_CTE
+        + """
         SELECT COALESCE(analysis_neighborhood, '(Unknown)') AS neighborhood,
                COUNT(*) AS restaurants,
                SUM(status = 'Pass') AS pass,
@@ -381,6 +440,7 @@ def api_neighborhoods(conn, _params):
         GROUP BY neighborhood
         ORDER BY restaurants DESC
     """
+    )
     return {"neighborhoods": [dict(r) for r in conn.execute(sql)]}
 
 
@@ -388,9 +448,11 @@ BROWSE_SORTS = {
     "name": "dba COLLATE NOCASE",
     "neighborhood": "analysis_neighborhood COLLATE NOCASE",
     "date": "latest_date",
-    "status": ("CASE status WHEN 'Closure' THEN 0 "
-               "WHEN 'Conditional Pass' THEN 1 WHEN 'Pass' THEN 2 "
-               "ELSE 3 END"),
+    "status": (
+        "CASE status WHEN 'Closure' THEN 0 "
+        "WHEN 'Conditional Pass' THEN 1 WHEN 'Pass' THEN 2 "
+        "ELSE 3 END"
+    ),
     "violations": "status_violations",
 }
 
@@ -413,20 +475,22 @@ def api_browse(conn, params):
             args.append(status)
     sort = BROWSE_SORTS.get(params.get("sort", "name"), BROWSE_SORTS["name"])
     direction = "DESC" if params.get("dir") == "desc" else "ASC"
-    limit = min(int(params.get("limit", "200") or 200), 500)
-    offset = max(int(params.get("offset", "0") or 0), 0)
+    try:
+        limit = min(max(int(params.get("limit") or 200), 1), 500)
+        offset = max(int(params.get("offset") or 0), 0)
+    except ValueError:
+        return {"error": "limit and offset must be integers"}, 400
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     total = conn.execute(
-        RESTAURANTS_CTE + f"SELECT COUNT(*) c FROM restaurants {where_sql}",
-        args).fetchone()["c"]
+        RESTAURANTS_CTE + f"SELECT COUNT(*) c FROM restaurants {where_sql}", args
+    ).fetchone()["c"]
     rows = conn.execute(
-        RESTAURANTS_CTE +
-        f"SELECT * FROM restaurants {where_sql} "
+        RESTAURANTS_CTE + f"SELECT * FROM restaurants {where_sql} "
         f"ORDER BY {sort} {direction}, dba COLLATE NOCASE ASC "
         f"LIMIT {limit} OFFSET {offset}",
-        args).fetchall()
-    return {"total": total, "offset": offset,
-            "results": [dict(r) for r in rows]}
+        args,
+    ).fetchall()
+    return {"total": total, "offset": offset, "results": [dict(r) for r in rows]}
 
 
 ROUTES = {
@@ -439,6 +503,7 @@ ROUTES = {
 
 # ---------------------------------------------------------------------------
 # HTTP server
+
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
@@ -459,8 +524,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ROUTES:
-            params = {k: v[0] for k, v in
-                      urllib.parse.parse_qs(parsed.query).items()}
+            params = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
             conn = connect()
             try:
                 result = ROUTES[parsed.path](conn, params)
@@ -479,8 +543,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if urllib.parse.urlparse(self.path).path == "/api/refresh":
             started = start_refresh()
-            self.send_json({"started": started,
-                            "refreshing": refresh_state["running"]})
+            self.send_json({"started": started, "refreshing": refresh_state["running"]})
             return
         self.send_error(404)
 
@@ -488,15 +551,16 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     init_db()
     with connect() as conn:
-        empty = conn.execute(
-            "SELECT COUNT(*) c FROM inspections").fetchone()["c"] == 0
+        empty = conn.execute("SELECT COUNT(*) c FROM inspections").fetchone()["c"] == 0
     if empty:
-        print("[startup] cache is empty, pulling data from DataSF "
-              "in the background (~30s)...")
+        print(
+            "[startup] cache is empty, pulling data from DataSF "
+            "in the background (~30s)..."
+        )
         start_refresh()
 
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"SF Restaurant Health Scores → http://localhost:{PORT}")
+    print(f"Clean Plate → http://localhost:{PORT}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

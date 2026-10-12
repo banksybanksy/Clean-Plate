@@ -1,108 +1,73 @@
-# SF Restaurant Health Scores
+# Clean Plate
 
-Look up any San Francisco restaurant and see exactly what the city's health inspectors recorded: its current pass/fail status, the violations found, and the full inspection history.
+[![CI](https://github.com/banksybanksy/Clean-Plate/actions/workflows/ci.yml/badge.svg)](https://github.com/banksybanksy/Clean-Plate/actions/workflows/ci.yml)
 
-![Home page with search and citywide stats](docs/screenshots/home-landing.png)
+A local web app for looking up a San Francisco restaurant's health inspection record: its current Pass / Conditional Pass / Closure status, the violations cited and every inspection since 2024. I built it because SF no longer publishes a numeric health score, and the data that replaced it is easy to misread.
 
-## What it does
+![Restaurant detail: the status is dated to the latest rated inspection, while a later unrated site visit stays in the history](docs/screenshots/restaurant-detail-kaiyo.png)
 
-Search 8,500+ SF food facilities by name, address, or neighborhood and get the city's published inspection results for each one. You see the current facility rating status (Pass, Conditional Pass, or Closure), the specific violations cited at each inspection with their health-code sections, and every recorded visit in date order. You can also browse and filter the whole directory by neighborhood and status. It runs entirely on your machine and caches the data locally, so after the first load it works offline.
+## How it works
 
-## Why I built it
+**Current status means the latest *rated* inspection.** The current DataSF dataset has no score column, and many visits (site visits, plan checks, some complaint follow-ups) carry no rating at all. If you took "status" from the most recent row, a restaurant rated Pass a month ago would show as unrated. A shared SQL CTE (`RESTAURANTS_CTE` in [app.py](app.py)) rolls inspections up to one row per permit. Name and address come from the newest row, and status comes from the newest row where `facility_rating_status IS NOT NULL`. Unrated visits stay in the history, labeled "not rated".
 
-I wanted to check a restaurant's health record before eating there, and I expected to find a score. San Francisco used to publish one. It does not anymore, and the data that replaced it is easy to misread. I built a small local tool that shows exactly what the city publishes today, without inventing a number it no longer provides.
+**Nothing is invented.** The app doesn't compute a grade, doesn't hide unrated visits and doesn't backfill old-dataset scores. Statuses use the city's own wording, and violations are shown as the inspector wrote them.
 
-## Data sources
+**Violations are parsed from one text field.** Each inspection stores its violations as a single string: `<codes> - <description>., <codes> - <description>.` `parse_violations` splits entries only where a period follows a letter, so section numbers like `113953.3` stay whole. It also splits code lists only on commas outside parentheses, so `114067(f, g)` stays one code.
 
-| Source | What it provides | API key | Updates |
-|---|---|---|---|
-| [DataSF: Health Inspection Scores (2024-Present)](https://data.sfgov.org/d/tvy3-wexg) (SODA resource `tvy3-wexg`) | Every inspection since Jan 2024: facility, address, neighborhood, inspection type, facility rating status, violations, coordinates | No. An optional [Socrata app token](https://dev.socrata.com/docs/app-tokens) only raises the rate limit. | Monthly, per SF DPH's DataSF publishing schedule |
+The server is a single standard-library Python file. It caches the dataset in SQLite and serves a small JSON API, and the frontend is plain HTML, CSS and JS with no build step.
 
-The app reads the JSON endpoint `https://data.sfgov.org/resource/tvy3-wexg.json`, paging with `$select`, `$order`, `$limit`, and `$offset`. No other source is used. No Yelp, no Google, no scraping.
+## Run it
 
-## The interesting problem
-
-**What I expected.** The old SF inspection data (the LIVES-era dataset) had a 0 to 100 numeric health score per restaurant. I assumed the current dataset would too, and that building this was mostly a matter of showing that number.
-
-**What it actually did.** The current dataset (`tvy3-wexg`, 2024 to present) has no numeric score column at all. Worse, many inspections carry no rating of any kind. A restaurant would have a clear Pass on one inspection and then a later visit with the rating field simply blank. Sorting by "most recent inspection" therefore made restaurants look unrated even when the city had rated them a month earlier.
-
-**How I found out.** I pulled the raw SODA records and read them directly instead of trusting the field names. I compared the current schema against the older DPH datasets in the same lineage (`pyih-qa8i` for 2016 to 2019 and `5tti-66ds` for 2020 to 2023) and confirmed the numeric score field was gone, not renamed. Then I traced individual permit numbers chronologically and saw the pattern: the blank-rating rows were not data errors. Certain visit types (site visits, structural and plan checks, some complaint follow-ups) are never assigned a facility rating. They are real inspections that the city does not rate.
-
-**What I decided to do.** I did not manufacture a score. Instead:
-
-- A restaurant's "current status" is defined as the most recent inspection that actually carries a rating, not simply the most recent inspection. In SQL this is a `rated` CTE filtered to `facility_rating_status IS NOT NULL`, `LEFT JOIN`ed onto the restaurant so an unrated site visit cannot erase a real Pass or Closure ([app.py](app.py), the `RESTAURANTS_CTE` block).
-- Unrated visits stay visible in the inspection history, labeled "not rated," rather than being hidden. Hiding them would misrepresent how often the city actually visits a place.
-- The city's Pass / Conditional Pass / Closure wording is shown verbatim, and violations are shown exactly as the inspector wrote them, with the health-code sections they cite.
-
-**What I chose not to do.** I did not invent a numeric grade, I did not drop the unrated inspections to make the timeline look cleaner, and I did not map old-dataset scores onto new records to fill the gap. All three would have looked better and been wrong.
-
-![Restaurant detail: status is dated to the most recent rated inspection, while a later unrated site visit stays visible in the history](docs/screenshots/restaurant-detail-kaiyo.png)
-
-## Running it locally
-
-Requires **Python 3.9+** (macOS ships with it). There are no packages to install; the server uses only the standard library.
+Requires Python 3.9+. There's nothing to install.
 
 ```bash
 python3 app.py
+# open http://localhost:8000
 ```
 
-Then open **http://localhost:8000**.
+The first run downloads the dataset from DataSF (about 22k rows) into `data/inspections.db`. The page fills in when the download finishes. If the download fails, the home page shows the error. **Refresh** in the top bar downloads the data again. You can delete the cache at any time.
 
-On first run the app downloads the full dataset (about 22k records, roughly 30 seconds) from DataSF into a local SQLite cache at `data/inspections.db`, and the page populates itself when that finishes. After that everything is served from the cache. Use the **Refresh** button in the top bar to re-pull the latest data.
-
-Environment variables are optional; copy `.env.example` if you want to set any:
+Optional environment variables (listed in `.env.example`; the app reads them from the environment, not from a `.env` file):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8000` | Port to serve on |
-| `DATASF_APP_TOKEN` | *(none)* | Optional Socrata app token; raises the API rate limit for refreshes |
+| `DATASF_APP_TOKEN` | none | Socrata app token. It only raises the API rate limit. |
 
-## Architecture
+```bash
+PORT=8080 python3 app.py
+```
 
-A short list of what talks to what:
+Tests and lint (no network; tests use fictional records in `tests/fixtures.py`):
 
-- **Frontend** (`static/index.html`, `app.js`, `style.css`) is a dependency-free single-page app. It calls the local JSON API and renders search, detail, browse, and neighborhood views.
-- **Server** (`app.py`) is a stdlib `http.server`. It serves the static files and a small JSON API, and on first run or refresh it pages through the DataSF SODA API and loads the result into SQLite.
-- **Cache** (`data/inspections.db`) is SQLite in WAL mode. It is the only persistence, is regenerated on demand, and is safe to delete. A refresh writes the new data in one transaction, so the app stays usable while it runs.
-- **One shared SQL CTE** rolls inspection rows up to one row per permit number and computes the current rated status. The search, detail, browse, and neighborhood endpoints all build on it.
+```bash
+python3 -m unittest
+ruff check . && ruff format --check .
+```
 
-JSON API, if you want to script against it:
+## Data and limits
 
-| Endpoint | Description |
+The only source is [DataSF: Health Inspection Scores (2024-Present)](https://data.sfgov.org/d/tvy3-wexg) (SODA resource `tvy3-wexg`), published by SF Department of Public Health. It needs no API key.
+
+- **Statuses are point-in-time.** The cache is as fresh as your last refresh, and DataSF lags actual inspections. A Closure shown here may already be resolved. Always check the inspection date.
+- **History starts in January 2024.** Earlier DPH datasets exist but aren't loaded.
+- **A missing restaurant isn't a verdict.** It may be new, renamed or not yet in the data.
+- **Search is substring matching** (SQL `LIKE` over name, address and neighborhood), so misspellings miss.
+- **No map.** Coordinates are cached but not used yet.
+- **Refresh holds the whole dataset in memory** before writing it in one transaction. That's fine at 22k rows.
+- **Source quirks are shown as-is**, such as odd names or future-dated rows. The "newest inspection" stat on the home page skips future dates.
+
+## API
+
+| Endpoint | Returns |
 |---|---|
-| `GET /api/status` | Cache stats, last refresh time, progress |
-| `POST /api/refresh` | Re-download the dataset (runs in the background) |
-| `GET /api/search?q=tacos` | Search over name, address, neighborhood |
-| `GET /api/restaurant?permit=06733534` | Full detail and parsed violation history |
-| `GET /api/neighborhoods` | Restaurant and status counts per neighborhood |
-| `GET /api/browse?neighborhood=Mission&status=Closure&sort=date&dir=desc` | Sortable, filterable table data |
+| `GET /api/status` | Row counts, last refresh, refresh progress or error |
+| `POST /api/refresh` | Starts a background re-download |
+| `GET /api/search?q=tacos` | Up to 25 restaurants matching every word |
+| `GET /api/restaurant?permit=06733534` | Summary and parsed inspection history |
+| `GET /api/neighborhoods` | Status counts per neighborhood |
+| `GET /api/browse?neighborhood=Mission&status=Closure&sort=date&dir=desc` | Filterable, sortable list (`status=none` for unrated) |
 
-## Known limitations
+## Status
 
-These are real. Some are by design, some I would fix with more time.
-
-- **The data lags reality.** The cache reflects your last pull, and DataSF itself trails actual inspections. A Closure shown here may already be resolved after a passing re-inspection that is not in the data yet. A restaurant missing from the data is not necessarily unsafe; it may be newly opened, renamed, or not yet loaded. Always check the inspection date.
-- **History starts January 2024.** Only the current dataset is cached, so older inspections are not shown even though earlier DPH datasets exist.
-- **Search is substring matching, not fuzzy.** It does a SQL `LIKE` over name, address, and neighborhood, caps results, and ranks them in Python. Misspellings will miss.
-- **Coordinates are stored but unused.** The app fetches and caches latitude and longitude but has no map view yet. That is the most obvious next feature.
-- **The refresh loads the whole dataset into memory** before writing it. That is fine at about 22k rows but would not scale to a much larger dataset without streaming.
-- **Source-data quirks are shown as-is.** A few records are future-dated or oddly named. The app displays what DataSF publishes rather than silently correcting it (the citywide "newest inspection" stat does filter out future dates).
-- **Local and single-user by design.** It binds to `127.0.0.1`, has no accounts, and is not hosted.
-
-## Screenshots
-
-Live search over name, address, and neighborhood, each result tagged with its current status:
-
-![Search suggestions](docs/screenshots/search-suggestions.png)
-
-Browse the full directory, sortable and filterable:
-
-![Browse table](docs/screenshots/browse-table.png)
-
-Unrated facilities are surfaced, not dropped. Filtering to "No rating recorded" shows the site-visit-only permits that carry no facility rating:
-
-![Browse filtered to no rating recorded](docs/screenshots/browse-unrated.png)
-
-A restaurant whose history spans every status, including two closures and an unrated visit, all shown in order:
-
-![Hong Kong Lounge full history](docs/screenshots/restaurant-detail-hongkong.png)
+A personal project that runs locally and binds to `127.0.0.1`. It isn't hosted anywhere. The most obvious next step is a map view, since the coordinates are already in the cache.
